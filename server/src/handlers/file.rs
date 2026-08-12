@@ -268,6 +268,21 @@ fn getent_name(database: &str, id: u32) -> Result<Option<String>, ()> {
     }
 }
 
+/// Extract an owned name from a successful `getpwuid_r`/`getgrgid_r` result.
+///
+/// `ptr` is the struct's name field (`pw_name`/`gr_name`), valid only when the
+/// reentrant lookup succeeded.  Returns `None` for a null pointer or when the
+/// name is not valid UTF-8.
+fn nss_name_from_ptr(ptr: *const libc::c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: `ptr` is a valid NUL-terminated string owned by the `passwd` or
+    // `group` struct populated by a successful getpwuid_r/getgrgid_r call.
+    let name = unsafe { std::ffi::CStr::from_ptr(ptr) };
+    name.to_str().ok().map(str::to_string)
+}
+
 /// Shared NSS name resolution for both uid and gid.
 ///
 /// Uses `getpwuid_r` or `getgrgid_r` (selected by `kind`) with a
@@ -313,12 +328,7 @@ fn resolve_nss_name(
                         &mut result_ptr,
                     )
                 };
-                let name_str = if !result_ptr.is_null() {
-                    let cname = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
-                    cname.to_str().ok().map(|s| s.to_string())
-                } else {
-                    None
-                };
+                let name_str = nss_name_from_ptr(pwd.pw_name);
                 (ret, result_ptr.is_null(), name_str)
             }
             NssKind::Group => {
@@ -333,12 +343,7 @@ fn resolve_nss_name(
                         &mut result_ptr,
                     )
                 };
-                let name_str = if !result_ptr.is_null() {
-                    let cname = unsafe { std::ffi::CStr::from_ptr(grp.gr_name) };
-                    cname.to_str().ok().map(|s| s.to_string())
-                } else {
-                    None
-                };
+                let name_str = nss_name_from_ptr(grp.gr_name);
                 (ret, result_ptr.is_null(), name_str)
             }
         };
@@ -402,7 +407,7 @@ pub fn map_io_error(err: std::io::Error, path: &str) -> RpcError {
     }
 }
 
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
@@ -410,6 +415,14 @@ use std::path::PathBuf;
 pub fn bytes_to_path(bytes: &[u8]) -> PathBuf {
     let path = PathBuf::from(OsStr::from_bytes(bytes));
     expand_tilde_path(&path)
+}
+
+/// Null-terminate raw path bytes for libc calls.
+///
+/// Unix paths cannot contain an interior NUL byte, so this only fails on
+/// programmer error.
+pub(crate) fn path_cstring(bytes: &[u8]) -> CString {
+    CString::new(bytes).expect("path cannot contain an interior NUL byte")
 }
 
 /// Expand ~ to home directory in a PathBuf.
