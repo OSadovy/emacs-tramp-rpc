@@ -1972,7 +1972,12 @@ LABEL is used only for debug messages.  The returned plist contains
             (if (tramp-rpc--with-suspended-timers-preserving-process-timers
                   (with-local-quit
                     (tramp-rpc--drain-connection-stderr conn)
-                    (accept-process-output process poll-interval nil t)
+                    ;; Output delivered while waiting runs other packages'
+                    ;; filters and timers.  Under Tramp's hook every error
+                    ;; they signal, caught or not, is formatted into a
+                    ;; message along with its data.
+                    (let ((signal-hook-function nil))
+                      (accept-process-output process poll-interval nil t))
                     (tramp-rpc--drain-connection-stderr conn)
                     t))
                 (collect)
