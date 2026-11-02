@@ -675,6 +675,53 @@ The helper also verifies that the output payload in the notification is queued."
       (when (process-live-p relay)
         (delete-process relay)))))
 
+;; Delivery runs the relay's filter, which is another package's code, and
+;; inside the wait that code nests under the call and is unwound by a quit
+;; meant for it.
+(ert-deftest tramp-rpc-mock-test-request-wait-defers-process-timers ()
+  "A process timer scheduled during a synchronous wait runs after it returns."
+  (tramp-rpc-mock-test-request--with-connection (process buffer)
+    (let* ((vec (tramp-rpc-mock-test-request--vec))
+           (tramp-rpc--connections (make-hash-table :test 'equal))
+           (relay (make-pipe-process :name "tramp-rpc-mock-test-defer-relay"
+                                     :noquery t))
+           (table (make-hash-table :test 'eq))
+           (original-accept-process-output
+            (symbol-function 'accept-process-output))
+           scheduled
+           events)
+      (unwind-protect
+          (progn
+            (puthash relay (list :delivery-timer nil) table)
+            (cl-letf (((symbol-function 'tramp-rpc--ensure-connection)
+                       (lambda (_vec) connection))
+                      ((symbol-function 'tramp-rpc-protocol-encode-request-with-id)
+                       (lambda (&rest _) '(303 . "request")))
+                      ((symbol-function 'process-send-string)
+                       #'ignore)
+                      ((symbol-function 'accept-process-output)
+                       (lambda (&rest args)
+                         (if scheduled
+                             (apply original-accept-process-output args)
+                           (setq scheduled t)
+                           (tramp-rpc--schedule-process-timer
+                            table relay :delivery-timer
+                            (lambda () (push 'delivered events)))
+                           ;; Timers run here if the wait lets them.
+                           (funcall original-accept-process-output nil 0.05)
+                           (puthash 303 '(:id 303 :result done)
+                                    (tramp-rpc-connection-pending-responses
+                                     connection))
+                           t))))
+              (should (eq 'done
+                          (tramp-rpc--call-with-timeout vec "test" nil 1 0.01)))
+              (push 'returned events))
+            (should (equal events '(returned)))
+            (accept-process-output nil 0.05)
+            (should (equal events '(delivered returned))))
+        (when (process-live-p relay)
+          (delete-process relay))))))
+
 (ert-deftest tramp-rpc-mock-test-request-wait-preserves-async-process-notification ()
   "A push notification received during a sync wait is handled without disrupting the wait."
   (tramp-rpc-mock-test-request--with-connection (process buffer)
