@@ -239,7 +239,8 @@ or hidden TRAMP ad-hoc proxy hops).")
 ;; `tramp-rpc-connection' generation; see tramp-rpc-connection.el.
 
 (defvar tramp-rpc--process-timer-recorder nil
-  "Function called for process timers created during a suspended RPC wait.")
+  "Function called for process timers created during a suspended RPC wait.
+It takes over the timer, which must not run until the wait is over.")
 
 ;; tramp-rpc--process-write-queues is defined in tramp-rpc-process.el
 
@@ -1906,7 +1907,11 @@ MAX-BYTES limits the number of bytes returned."
          (point-max))))))
 
 (defmacro tramp-rpc--with-suspended-timers-preserving-process-timers (&rest body)
-  "Run BODY with external timers suspended, preserving new process timers.
+  "Run BODY with timers suspended, starting new process timers after it.
+A process timer hands relay output to its filter, which runs another
+package's code; run inside the wait, that work nests under the call, and
+one `C-g' meant for the call unwinds it.  Process timers scheduled in
+BODY start, in the order they were scheduled, once BODY exits.
 Reactivation assumes no enclosing `with-tramp-suspended-timers' is still
 in effect when BODY exits, because the restored timers would land in that
 outer binding of `timer-list' and be discarded again.  The RPC wait loops
@@ -1918,10 +1923,11 @@ connection's filter, and therefore no nested wait, can run inside BODY."
        (unwind-protect
            (let ((tramp-rpc--process-timer-recorder
                   (lambda (&rest timer-state)
+                    (cancel-timer (car timer-state))
                     (push timer-state ,recorded))))
              (with-tramp-suspended-timers
                ,@body))
-         (dolist (timer-state ,recorded)
+         (dolist (timer-state (nreverse ,recorded))
            (pcase-let ((`(,timer ,table ,process ,timer-key) timer-state))
              (when (and (timerp timer)
                         (not (memq timer timer-list))
