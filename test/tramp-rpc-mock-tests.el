@@ -1276,6 +1276,34 @@ This matches the behavior expected by `tramp-test28-process-file'."
                      (tramp-rpc--call-pipelined
                       'vec '(("test" . nil))))))))
 
+(ert-deftest tramp-rpc-mock-test-response-wait-runs-other-code-untraced ()
+  "Errors signalled by code run during a response wait skip Tramp's hook.
+Tramp's hook formats every signal into a message with its data, including
+signals the code catches itself, and output delivered during the wait runs
+other packages' filters and timers."
+  (let* ((buffer (generate-new-buffer " *tramp-rpc-untraced-test*"))
+         (process (make-pipe-process :name "tramp-rpc-untraced-test"
+                                     :buffer buffer :noquery t))
+         (conn (tramp-rpc--make-connection :process process :buffer buffer))
+         (marker '("File exists" "tramp-rpc-untraced-test"))
+         (ran 0)
+         (traced 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'accept-process-output)
+                   (lambda (&rest _)
+                     (setq ran (1+ ran))
+                     (ignore-errors (signal 'file-already-exists marker))
+                     nil)))
+          (let ((signal-hook-function
+                 (lambda (_symbol data)
+                   (when (equal data marker)
+                     (setq traced (1+ traced))))))
+            (tramp-rpc--wait-for-response-ids conn '(1) 0.05 0.01 "test"))
+          (should (> ran 0))
+          (should (= traced 0)))
+      (when (process-live-p process) (delete-process process))
+      (kill-buffer buffer))))
+
 (ert-deftest tramp-rpc-mock-test-pipelined-timeout-preserves-connection ()
   "A live connection remains reusable after a pipeline response timeout."
   (let* ((buffer (generate-new-buffer " *tramp-rpc-pipeline-test*"))

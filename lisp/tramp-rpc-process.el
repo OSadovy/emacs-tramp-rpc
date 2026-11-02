@@ -426,7 +426,10 @@ OWNER-PROCESS owns the request."
                   (tramp-rpc--process-write-queue-live-p queue)
                   (or (plist-get queue :writing) (plist-get queue :pending))
                   (< (float-time) deadline)))
-      (accept-process-output nil 0.01))
+      ;; Every filter and timer may run here; see
+      ;; `tramp-rpc--wait-for-response-ids' on Tramp's signal hook.
+      (let ((signal-hook-function nil))
+        (accept-process-output nil 0.01)))
     (when-let* ((queue (gethash queue-key tramp-rpc--process-write-queues)))
       (cond
        ((not (tramp-rpc--process-write-queue-current-p queue))
